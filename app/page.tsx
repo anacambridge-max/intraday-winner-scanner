@@ -6,11 +6,14 @@ type Row = {
   symbol: string;
   score: number;
   rvol: number;
+  volumeAcceleration: number;
   change: number;
   vwapGap: number;
-  breakout: boolean;
   relativeStrength: number;
-  volumeRatio: number;
+  breakout: boolean;
+  ema9: number;
+  ema20: number;
+  rsi: number;
   price: number;
 };
 
@@ -18,6 +21,7 @@ type ScanResponse = {
   status: string;
   source?: string;
   universe?: number;
+  analyzed?: number;
   niftyChange?: number;
   generatedAt?: string;
   rows?: Row[];
@@ -58,7 +62,7 @@ export default function Home() {
       <header className="header">
         <div>
           <h1 className="title">Intraday Winner Scanner</h1>
-          <p className="subtitle">NSE F&amp;O • live Upstox data • volume + VWAP + momentum + relative strength</p>
+          <p className="subtitle">NSE F&amp;O • live Upstox • 5-min RVOL + VWAP + EMA + RSI + breakout + relative strength</p>
         </div>
         <div className="status">
           <span className={`dot ${live ? "liveDot" : ""}`} />
@@ -68,22 +72,20 @@ export default function Home() {
 
       <section className="stats">
         <div className="card"><div className="label">Market</div><div className="value">NSE</div></div>
-        <div className="card"><div className="label">Universe</div><div className="value">{data.universe ?? "F&amp;O"}</div></div>
-        <div className="card"><div className="label">Timeframe</div><div className="value">5 min</div></div>
+        <div className="card"><div className="label">F&amp;O Universe</div><div className="value">{data.universe ?? "--"}</div></div>
+        <div className="card"><div className="label">5-min Candidates</div><div className="value">{data.analyzed ?? "--"}</div></div>
         <div className="card"><div className="label">NIFTY</div><div className="value">{data.niftyChange != null ? `${data.niftyChange >= 0 ? "+" : ""}${fmt(data.niftyChange)}%` : "--"}</div></div>
       </section>
 
       {!live && data.message && (
-        <section className="errorPanel">
-          <strong>Scanner connection:</strong> {data.message}
-        </section>
+        <section className="errorPanel"><strong>Scanner connection:</strong> {data.message}</section>
       )}
 
       <section className="panel">
         <div className="panelHead">
           <div>
             <h2 className="panelTitle">Live Winner Candidates</h2>
-            <div className="panelHint">Stocks are ranked by a 100-point intraday score. Refreshes every 15 seconds.</div>
+            <div className="panelHint">5-min candle engine • RVOL vs prior 20 candles • volume acceleration • VWAP • EMA 9/20 • RSI 14 • breakout • RS vs NIFTY</div>
           </div>
           <span className={`badge ${live ? "badgeLive" : ""}`}>{live ? "LIVE FEED" : "WAITING"}</span>
         </div>
@@ -91,23 +93,26 @@ export default function Home() {
           <table>
             <thead>
               <tr>
-                <th>#</th><th>Stock</th><th>Score</th><th>Vol Ratio</th><th>Change</th><th>VWAP Gap</th><th>RS vs NIFTY</th><th>Breakout</th><th>Signal</th>
+                <th>#</th><th>Stock</th><th>Score</th><th>RVOL</th><th>Vol Accel</th><th>Change</th><th>VWAP</th><th>RS</th><th>RSI</th><th>EMA</th><th>Breakout</th><th>Signal</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={9} className="empty">{live ? "No stock currently passes the quality gate." : "Waiting for Upstox market data…"}</td></tr>
+                <tr><td colSpan={12} className="empty">{live ? "No stock currently passes the quality gate. This is intentional — the scanner filters for potential winners rather than filling the table." : "Waiting for Upstox market data…"}</td></tr>
               ) : rows.map((row, index) => (
                 <tr key={row.symbol}>
                   <td className="rank">{index + 1}</td>
                   <td className="symbol">{row.symbol}</td>
                   <td className="score">{row.score}</td>
-                  <td>{fmt(row.volumeRatio)}x</td>
+                  <td>{fmt(row.rvol)}x</td>
+                  <td>{fmt(row.volumeAcceleration)}x</td>
                   <td className={row.change >= 0 ? "green" : "red"}>{row.change >= 0 ? "+" : ""}{fmt(row.change)}%</td>
                   <td className={row.vwapGap >= 0 ? "green" : "red"}>{row.vwapGap >= 0 ? "+" : ""}{fmt(row.vwapGap)}%</td>
                   <td className={row.relativeStrength >= 0 ? "green" : "red"}>{row.relativeStrength >= 0 ? "+" : ""}{fmt(row.relativeStrength)}%</td>
+                  <td>{fmt(row.rsi, 1)}</td>
+                  <td>{row.ema9 >= row.ema20 ? <span className="yes">9&gt;20</span> : <span className="muted">9&lt;20</span>}</td>
                   <td>{row.breakout ? <span className="yes">YES</span> : <span className="muted">—</span>}</td>
-                  <td><span className={`signal ${row.score >= 85 ? "strong" : row.score >= 70 ? "watch" : "neutral"}`}>{row.score >= 85 ? "A+ SETUP" : row.score >= 70 ? "WATCH" : "EARLY"}</span></td>
+                  <td><span className={`signal ${row.score >= 85 ? "strong" : row.score >= 70 ? "watch" : "neutral"}`}>{row.score >= 85 ? "A+ SETUP" : row.score >= 70 ? "A SETUP" : "EARLY"}</span></td>
                 </tr>
               ))}
             </tbody>
