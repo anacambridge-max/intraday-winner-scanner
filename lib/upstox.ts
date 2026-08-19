@@ -112,8 +112,9 @@ export async function runScan(token: string) {
   }
 
   const niftyQuote = quoteMap.get(niftyKey);
-  const niftyChange = niftyQuote?.last_price && niftyQuote?.close
-    ? ((niftyQuote.last_price / niftyQuote.close) - 1) * 100
+  const niftyClose = Number(niftyQuote?.ohlc?.close ?? 0);
+  const niftyChange = niftyQuote?.last_price && niftyClose > 0
+    ? ((Number(niftyQuote.last_price) / niftyClose) - 1) * 100
     : 0;
 
   const rows: ScanRow[] = [];
@@ -123,22 +124,22 @@ export async function runScan(token: string) {
     if (!q?.last_price) continue;
 
     const price = Number(q.last_price);
-    const cp = Number(q.close ?? 0);
+    const cp = Number(q.ohlc?.close ?? 0);
     const change = cp > 0 ? (price / cp - 1) * 100 : 0;
     const avgPrice = Number(q.average_price ?? 0);
     const vwapGap = avgPrice > 0 ? (price / avgPrice - 1) * 100 : 0;
     const live = h?.live_ohlc;
     const previous = h?.prev_ohlc;
-    const dayHigh = Number(live?.high ?? price);
-    const dayLow = Number(live?.low ?? price);
+    const dayHigh = Number(live?.high ?? q.ohlc?.high ?? price);
+    const dayLow = Number(live?.low ?? q.ohlc?.low ?? price);
     const rangePosition = dayHigh > dayLow ? (price - dayLow) / (dayHigh - dayLow) : 0.5;
     const currentVolume = Number(q.volume ?? live?.volume ?? 0);
     const previousVolume = Number(previous?.volume ?? 0);
     const volumeRatio = previousVolume > 0 ? currentVolume / previousVolume : 0;
-    const breakout = Number(previous?.high ?? Infinity) > 0 && price >= Number(previous.high);
+    const breakout = Number(previous?.high ?? 0) > 0 && price >= Number(previous.high);
     const relativeStrength = change - niftyChange;
 
-    // Hard quality gate: we only surface stocks with real positive momentum or exceptional volume.
+    // Quality gate: don't flood the dashboard with random low-momentum names.
     if (change < 0.15 && volumeRatio < 1.25) continue;
 
     const score = scoreRow(change, volumeRatio, vwapGap, rangePosition, breakout, relativeStrength);
