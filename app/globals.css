@@ -1,51 +1,40 @@
 * { box-sizing: border-box; }
-
 html, body { margin: 0; min-height: 100%; }
-
-body {
-  background: #070b12;
-  color: #e8eef7;
-  font-family: Arial, Helvetica, sans-serif;
-}
-
+body { background: #070b12; color: #e8eef7; font-family: Arial, Helvetica, sans-serif; }
 button, input, select { font: inherit; }
-
-.shell { min-height: 100vh; padding: 24px; }
-
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 22px;
-}
-
+.shell { min-height: 100vh; padding: 24px; max-width: 1500px; margin: 0 auto; }
+.header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; }
 .title { margin: 0; font-size: 28px; letter-spacing: -0.5px; }
 .subtitle { margin: 6px 0 0; color: #8b98aa; font-size: 13px; }
-
-.status { display: flex; align-items: center; gap: 8px; color: #aeb9c8; font-size: 13px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #35d07f; box-shadow: 0 0 12px #35d07f; }
-
+.status { display: flex; align-items: center; gap: 8px; color: #aeb9c8; font-size: 13px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #e5a84b; box-shadow: 0 0 12px #e5a84b; }
+.liveDot { background: #35d07f; box-shadow: 0 0 12px #35d07f; }
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
 .card { background: #0d131d; border: 1px solid #1c2634; border-radius: 12px; padding: 16px; }
 .label { color: #7f8da1; font-size: 12px; }
 .value { margin-top: 7px; font-size: 23px; font-weight: 700; }
-
 .panel { background: #0d131d; border: 1px solid #1c2634; border-radius: 12px; overflow: hidden; }
-.panelHead { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid #1c2634; }
+.panelHead { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid #1c2634; gap: 16px; }
 .panelTitle { margin: 0; font-size: 16px; }
-.badge { border: 1px solid #244b38; background: #0d2419; color: #5fe19a; padding: 5px 9px; border-radius: 999px; font-size: 11px; }
-
+.panelHint { margin-top: 4px; color: #68768a; font-size: 11px; }
+.badge { border: 1px solid #51452a; background: #241e0e; color: #e9b85e; padding: 5px 9px; border-radius: 999px; font-size: 11px; white-space: nowrap; }
+.badgeLive { border-color: #244b38; background: #0d2419; color: #5fe19a; }
+.errorPanel { margin-bottom: 18px; padding: 14px 16px; border: 1px solid #573035; background: #211116; color: #e5a4ad; border-radius: 10px; font-size: 13px; }
 .tableWrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; min-width: 850px; }
-th, td { padding: 13px 14px; text-align: left; border-bottom: 1px solid #17202c; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; min-width: 1050px; }
+th, td { padding: 13px 12px; text-align: left; border-bottom: 1px solid #17202c; font-size: 13px; }
 th { color: #748297; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.rank { color: #647288; width: 38px; }
 .symbol { font-weight: 700; }
 .green { color: #53d88d; }
-.muted { color: #8390a2; }
-.score { font-weight: 800; }
-
-@media (max-width: 900px) {
-  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .shell { padding: 14px; }
-}
+.red { color: #ed777f; }
+.muted { color: #5f6c7f; }
+.score { font-weight: 800; font-size: 14px; }
+.yes { color: #6fe6a2; font-weight: 700; }
+.signal { display: inline-flex; padding: 4px 7px; border-radius: 6px; font-size: 10px; font-weight: 800; letter-spacing: .04em; }
+.signal.strong { color: #6fe6a2; background: #10281c; border: 1px solid #25583a; }
+.signal.watch { color: #e8c16c; background: #28200d; border: 1px solid #59471e; }
+.signal.neutral { color: #9aa6b8; background: #151c27; border: 1px solid #273244; }
+.empty { padding: 30px 14px; text-align: center; color: #68768a; }
+.footerLine { color: #586578; font-size: 11px; padding: 12px 2px; }
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .shell { padding: 14px; } .header { align-items: flex-start; flex-direction: column; } }
