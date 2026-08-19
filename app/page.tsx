@@ -1,51 +1,123 @@
-const rows = [
-  { symbol: "LIVE FEED", score: "--", rvol: "--", change: "--", vwap: "WAIT", breakout: "WAIT", signal: "CONNECT UPSTOX" }
-];
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type Row = {
+  symbol: string;
+  score: number;
+  rvol: number;
+  change: number;
+  vwapGap: number;
+  breakout: boolean;
+  relativeStrength: number;
+  volumeRatio: number;
+  price: number;
+};
+
+type ScanResponse = {
+  status: string;
+  source?: string;
+  universe?: number;
+  niftyChange?: number;
+  generatedAt?: string;
+  rows?: Row[];
+  message?: string;
+};
+
+function fmt(value: number, digits = 2) {
+  return Number.isFinite(value) ? value.toFixed(digits) : "--";
+}
 
 export default function Home() {
+  const [data, setData] = useState<ScanResponse>({ status: "connecting" });
+  const [loading, setLoading] = useState(true);
+
+  const scan = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/scan?t=${Date.now()}`, { cache: "no-store" });
+      const json = await response.json();
+      setData(json);
+    } catch (error) {
+      setData({ status: "error", message: error instanceof Error ? error.message : "Network error" });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    scan();
+    const timer = window.setInterval(scan, 15000);
+    return () => window.clearInterval(timer);
+  }, [scan]);
+
+  const live = data.status === "live";
+  const rows = data.rows ?? [];
+
   return (
     <main className="shell">
       <header className="header">
         <div>
           <h1 className="title">Intraday Winner Scanner</h1>
-          <p className="subtitle">NSE F&O • 5-minute engine • Volume + VWAP + momentum + relative strength</p>
+          <p className="subtitle">NSE F&amp;O • live Upstox data • volume + VWAP + momentum + relative strength</p>
         </div>
-        <div className="status"><span className="dot" /> Scanner engine ready</div>
+        <div className="status">
+          <span className={`dot ${live ? "liveDot" : ""}`} />
+          {loading ? "Connecting…" : live ? "LIVE • Upstox connected" : "Feed error"}
+        </div>
       </header>
 
       <section className="stats">
         <div className="card"><div className="label">Market</div><div className="value">NSE</div></div>
-        <div className="card"><div className="label">Universe</div><div className="value">F&amp;O</div></div>
+        <div className="card"><div className="label">Universe</div><div className="value">{data.universe ?? "F&amp;O"}</div></div>
         <div className="card"><div className="label">Timeframe</div><div className="value">5 min</div></div>
-        <div className="card"><div className="label">Data</div><div className="value">Upstox</div></div>
+        <div className="card"><div className="label">NIFTY</div><div className="value">{data.niftyChange != null ? `${data.niftyChange >= 0 ? "+" : ""}${fmt(data.niftyChange)}%` : "--"}</div></div>
       </section>
+
+      {!live && data.message && (
+        <section className="errorPanel">
+          <strong>Scanner connection:</strong> {data.message}
+        </section>
+      )}
 
       <section className="panel">
         <div className="panelHead">
-          <h2 className="panelTitle">Live Winner Candidates</h2>
-          <span className="badge">AWAITING LIVE FEED</span>
+          <div>
+            <h2 className="panelTitle">Live Winner Candidates</h2>
+            <div className="panelHint">Stocks are ranked by a 100-point intraday score. Refreshes every 15 seconds.</div>
+          </div>
+          <span className={`badge ${live ? "badgeLive" : ""}`}>{live ? "LIVE FEED" : "WAITING"}</span>
         </div>
         <div className="tableWrap">
           <table>
             <thead>
-              <tr><th>Stock</th><th>Score</th><th>RVOL</th><th>Change</th><th>VWAP</th><th>Breakout</th><th>Signal</th></tr>
+              <tr>
+                <th>#</th><th>Stock</th><th>Score</th><th>Vol Ratio</th><th>Change</th><th>VWAP Gap</th><th>RS vs NIFTY</th><th>Breakout</th><th>Signal</th>
+              </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {rows.length === 0 ? (
+                <tr><td colSpan={9} className="empty">{live ? "No stock currently passes the quality gate." : "Waiting for Upstox market data…"}</td></tr>
+              ) : rows.map((row, index) => (
                 <tr key={row.symbol}>
+                  <td className="rank">{index + 1}</td>
                   <td className="symbol">{row.symbol}</td>
                   <td className="score">{row.score}</td>
-                  <td>{row.rvol}</td>
-                  <td className="green">{row.change}</td>
-                  <td className="muted">{row.vwap}</td>
-                  <td className="muted">{row.breakout}</td>
-                  <td>{row.signal}</td>
+                  <td>{fmt(row.volumeRatio)}x</td>
+                  <td className={row.change >= 0 ? "green" : "red"}>{row.change >= 0 ? "+" : ""}{fmt(row.change)}%</td>
+                  <td className={row.vwapGap >= 0 ? "green" : "red"}>{row.vwapGap >= 0 ? "+" : ""}{fmt(row.vwapGap)}%</td>
+                  <td className={row.relativeStrength >= 0 ? "green" : "red"}>{row.relativeStrength >= 0 ? "+" : ""}{fmt(row.relativeStrength)}%</td>
+                  <td>{row.breakout ? <span className="yes">YES</span> : <span className="muted">—</span>}</td>
+                  <td><span className={`signal ${row.score >= 85 ? "strong" : row.score >= 70 ? "watch" : "neutral"}`}>{row.score >= 85 ? "A+ SETUP" : row.score >= 70 ? "WATCH" : "EARLY"}</span></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+
+      <div className="footerLine">
+        Last update: {data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString("en-IN") : "—"} · Scanner is a research tool, not an execution signal.
+      </div>
     </main>
   );
 }
