@@ -83,9 +83,7 @@ async function getFnoUniverse(): Promise<Instrument[]> {
     });
   }
 
-  if (universe.length < 150) {
-    throw new Error(`F&O universe unexpectedly small: ${universe.length}`);
-  }
+  if (universe.length < 150) throw new Error(`F&O universe unexpectedly small: ${universe.length}`);
 
   cachedUniverse = { expires: Date.now() + 6 * 60 * 60 * 1000, instruments: universe };
   return universe;
@@ -134,22 +132,20 @@ function metrics(candles: Candle[]) {
   const previous = ordered.slice(0, -1);
   const price = Number(latest[4]);
 
+  // Normalize the live, still-forming 5-minute candle against elapsed time.
   const latestStart = Date.parse(latest[0]);
-  const now = Date.now();
   const elapsedFraction = Number.isFinite(latestStart)
-    ? clamp((now - latestStart) / 300_000, 0.20, 1)
+    ? clamp((Date.now() - latestStart) / 300_000, 0.20, 1)
     : 1;
   const latestVolume = Number(latest[5]);
 
   const priorVolumes = previous.slice(-20).map((c) => Number(c[5])).filter((v) => v > 0);
   const avg20Volume = priorVolumes.length ? priorVolumes.reduce((a, b) => a + b, 0) / priorVolumes.length : 0;
-  const expectedPartial20 = avg20Volume * elapsedFraction;
-  const rvol = expectedPartial20 > 0 ? latestVolume / expectedPartial20 : 0;
+  const rvol = avg20Volume > 0 ? latestVolume / (avg20Volume * elapsedFraction) : 0;
 
   const prior5 = previous.slice(-5).map((c) => Number(c[5])).filter((v) => v > 0);
   const avg5Volume = prior5.length ? prior5.reduce((a, b) => a + b, 0) / prior5.length : 0;
-  const expectedPartial5 = avg5Volume * elapsedFraction;
-  const volumeAcceleration = expectedPartial5 > 0 ? latestVolume / expectedPartial5 : 0;
+  const volumeAcceleration = avg5Volume > 0 ? latestVolume / (avg5Volume * elapsedFraction) : 0;
 
   let pv = 0;
   let vol = 0;
@@ -208,6 +204,7 @@ export async function runScan(token: string) {
   const niftyClose = Number(nifty?.ohlc?.close ?? 0);
   const niftyChange = nifty?.last_price && niftyClose > 0 ? (Number(nifty.last_price) / niftyClose - 1) * 100 : 0;
 
+  // Use liquidity to make the candle analysis manageable, but do not select by gainers only.
   const candidates = symbols
     .map((instrument) => {
       const q = quoteMap.get(instrument.instrument_key);
@@ -248,15 +245,24 @@ export async function runScan(token: string) {
         const relativeStrength = change - niftyChange;
         const score = scoreRow(m, change, relativeStrength);
 
+        // Early-winner gate: do not require every confirmation at once.
+        // A genuine move can appear before EMA/RSI/breakout all align.
+        const volumeTrigger = m.rvol >= 1.10 || m.volumeAcceleration >= 1.20 || m.breakout;
+        const structureScore = [
+          m.price >= m.ema20 * 0.985,
+          m.vwapGap >= -0.65,
+          m.ema9 >= m.ema20,
+          m.rsi >= 50,
+          relativeStrength >= -0.40,
+        ].filter(Boolean).length;
+
         const qualifies =
-          change >= 0.05 &&
-          m.price >= m.ema20 * 0.985 &&
-          m.vwapGap >= -0.55 &&
-          (m.rvol >= 1.10 || m.volumeAcceleration >= 1.20 || m.breakout) &&
-          relativeStrength >= -0.35 &&
-          m.rsi >= 48 &&
-          m.rsi <= 82 &&
-          score >= 40;
+          change >= 0.00 &&
+          volumeTrigger &&
+          structureScore >= 2 &&
+          m.rsi >= 45 &&
+          m.rsi <= 85 &&
+          score >= 35;
 
         if (!qualifies) continue;
 
@@ -291,7 +297,7 @@ export async function runScan(token: string) {
     analyzed: candidates.length,
     niftyChange: Number(niftyChange.toFixed(2)),
     generatedAt: new Date().toISOString(),
-    rows: rows.slice(0, 15),
+    rows: rows.slice(0, 10),
     diagnostics: {
       candleSuccess,
       candleFailures,
