@@ -30,6 +30,9 @@ type ScanResponse = {
     candleSuccess?: number;
     candleFailures?: number;
     tooFewCandles?: number;
+    qualified?: number;
+    bestScore?: number;
+    bestSymbol?: string;
     lastFailure?: string;
   };
 };
@@ -85,9 +88,7 @@ export default function Home() {
         <div className="card"><div className="label">NIFTY</div><div className="value">{data.niftyChange != null ? `${data.niftyChange >= 0 ? "+" : ""}${fmt(data.niftyChange)}%` : "--"}</div></div>
       </section>
 
-      {!live && data.message && (
-        <section className="errorPanel"><strong>Scanner connection:</strong> {data.message}</section>
-      )}
+      {!live && data.message && <section className="errorPanel"><strong>Scanner connection:</strong> {data.message}</section>}
 
       <section className="panel">
         <div className="panelHead">
@@ -99,11 +100,7 @@ export default function Home() {
         </div>
         <div className="tableWrap">
           <table>
-            <thead>
-              <tr>
-                <th>#</th><th>Stock</th><th>Score</th><th>RVOL</th><th>Vol Accel</th><th>Change</th><th>VWAP</th><th>RS</th><th>RSI</th><th>EMA</th><th>Breakout</th><th>Signal</th>
-              </tr>
-            </thead>
+            <thead><tr><th>#</th><th>Stock</th><th>Score</th><th>RVOL</th><th>Vol Accel</th><th>Change</th><th>VWAP</th><th>RS</th><th>RSI</th><th>EMA</th><th>Breakout</th><th>Signal</th></tr></thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr><td colSpan={12} className="empty">{live ? "No qualified candidate in this refresh." : "Waiting for Upstox market data…"}</td></tr>
@@ -112,8 +109,7 @@ export default function Home() {
                   <td className="rank">{index + 1}</td>
                   <td className="symbol">{row.symbol}</td>
                   <td className="score">{row.score}</td>
-                  <td>{fmt(row.rvol)}x</td>
-                  <td>{fmt(row.volumeAcceleration)}x</td>
+                  <td>{fmt(row.rvol)}x</td><td>{fmt(row.volumeAcceleration)}x</td>
                   <td className={row.change >= 0 ? "green" : "red"}>{row.change >= 0 ? "+" : ""}{fmt(row.change)}%</td>
                   <td className={row.vwapGap >= 0 ? "green" : "red"}>{row.vwapGap >= 0 ? "+" : ""}{fmt(row.vwapGap)}%</td>
                   <td className={row.relativeStrength >= 0 ? "green" : "red"}>{row.relativeStrength >= 0 ? "+" : ""}{fmt(row.relativeStrength)}%</td>
@@ -129,11 +125,9 @@ export default function Home() {
       </section>
 
       <div className="footerLine">
-        Candle health: {success}/{data.analyzed ?? 0} successful{failures ? ` • ${failures} failed` : ""} · Last update: {data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString("en-IN") : "—"} · Scanner is a research tool, not an execution signal.
+        Candle health: {success}/{data.analyzed ?? 0} successful{failures ? ` • ${failures} failed` : ""} · Qualified: {data.diagnostics?.qualified ?? rows.length} · Best: {data.diagnostics?.bestSymbol || "—"} ({data.diagnostics?.bestScore ?? 0}) · Last update: {data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString("en-IN") : "—"} · Scanner is a research tool, not an execution signal.
       </div>
-      {data.diagnostics?.lastFailure && (
-        <div className="footerLine">Last candle API issue: {data.diagnostics.lastFailure}</div>
-      )}
+      {data.diagnostics?.lastFailure && <div className="footerLine">Last candle API issue: {data.diagnostics.lastFailure}</div>}
     </main>
   );
 }
