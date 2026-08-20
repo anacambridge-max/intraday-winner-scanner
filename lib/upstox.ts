@@ -110,7 +110,6 @@ function metrics(candles: Candle[]) {
   // Upstox returns newest first, so normalize to oldest -> newest.
   const ordered = [...candles].sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]));
   const closes = ordered.map((c) => Number(c[4]));
-  const volumes = ordered.map((c) => Number(c[5]));
   const latest = ordered[ordered.length - 1];
   const previous = ordered.slice(0, -1);
   const price = Number(latest[4]);
@@ -143,42 +142,44 @@ function metrics(candles: Candle[]) {
     ema20: ema(closes, 20),
     rsi: rsi(closes, 14),
     candleCount: ordered.length,
-    lastVolume: Number(latest[5]),
-    volumes,
   };
 }
 
 function scoreRow(m: ReturnType<typeof metrics>, change: number, relativeStrength: number) {
-  const volumeScore = clamp((m.rvol - 1) / 5.5 * 25);
-  const accelerationScore = clamp((m.volumeAcceleration - 1) / 4 * 10);
-  const momentumScore = clamp((change + 0.25) / 3.25 * 20);
-  const vwapScore = clamp((m.vwapGap + 0.25) / 1.75 * 15);
+  const volumeScore = clamp((m.rvol - 1) / 4.5 * 25);
+  const accelerationScore = clamp((m.volumeAcceleration - 1) / 3 * 10);
+  const momentumScore = clamp((change + 0.10) / 2.90 * 20);
+  const vwapScore = clamp((m.vwapGap + 0.40) / 1.60 * 15);
   const trendScore = m.ema9 >= m.ema20 ? 10 : 0;
   const breakoutScore = m.breakout ? 10 : 0;
-  const rsScore = clamp((relativeStrength + 0.25) / 2.75 * 10);
-  const rsiBonus = m.rsi >= 55 && m.rsi <= 75 ? 5 : 0;
+  const rsScore = clamp((relativeStrength + 0.25) / 2.25 * 10);
+  const rsiBonus = m.rsi >= 55 && m.rsi <= 78 ? 5 : 0;
   return Math.round(clamp(volumeScore + accelerationScore + momentumScore + vwapScore + trendScore + breakoutScore + rsScore + rsiBonus));
 }
 
 export async function runScan(token: string) {
   const universe = await getFnoUniverse();
-  const symbols = universe.slice(0, 500);
+  const symbols = universe.slice(0, 214);
   const instrumentKeys = symbols.map((x) => x.instrument_key);
   const niftyKey = "NSE_INDEX|Nifty 50";
   const encoded = encodeURIComponent([...instrumentKeys, niftyKey].join(","));
 
   const quotes = await fetchJson(`${API}/v2/market-quote/quotes?instrument_key=${encoded}`, token);
   const quoteMap = new Map<string, any>();
-  for (const value of Object.values(quotes.data ?? {}) as any[]) {
-    if (value?.instrument_token) quoteMap.set(value.instrument_token, value);
+  for (const [key, value] of Object.entries(quotes.data ?? {}) as [string, any][]) {
+    if (!value) continue;
+    // Upstox may expose the instrument key as either the map key or instrument_token.
+    if (value.instrument_token) quoteMap.set(value.instrument_token, value);
+    quoteMap.set(key.replace(":", "|"), value);
   }
 
   const nifty = quoteMap.get(niftyKey);
   const niftyClose = Number(nifty?.ohlc?.close ?? 0);
   const niftyChange = nifty?.last_price && niftyClose > 0 ? (Number(nifty.last_price) / niftyClose - 1) * 100 : 0;
 
-  // First pass: use cheap live quotes to select the strongest liquid movers.
-  // Only these candidates receive the more expensive 5-minute candle analysis.
+  // Do not start with "top gainers" only. That would make the scanner lagging by design.
+  // Use price strength + traded value to select a manageable live candidate set, then
+  // let the 5-minute engine decide whether the move is backed by unusual volume.
   const candidates = symbols
     .map((instrument) => {
       const q = quoteMap.get(instrument.instrument_key);
@@ -189,52 +190,71 @@ export async function runScan(token: string) {
       return { instrument, change, tradedValue };
     })
     .filter((x): x is { instrument: Instrument; change: number; tradedValue: number } => Boolean(x))
-    .filter((x) => x.change > -1.5)
-    .sort((a, b) => b.change - a.change || b.tradedValue - a.tradedValue)
-    .slice(0, 30);
+    .filter((x) => x.change > -2.0)
+    .sort((a, b) => b.tradedValue - a.tradedValue || b.change - a.change)
+    .slice(0, 24);
 
   const rows: ScanRow[] = [];
-  await Promise.all(candidates.map(async ({ instrument, change }) => {
-    try {
-      const key = encodeURIComponent(instrument.instrument_key);
-      const data = await fetchJson(`${API}/v3/historical-candle/intraday/${key}/minutes/5`, token);
-      const candles = (data.data?.candles ?? []) as Candle[];
-      if (candles.length < 5) return;
+  let candleSuccess = 0;
+  let candleFailures = 0;
+  let tooFewCandles = 0;
+  let lastFailure = "";
 
-      const m = metrics(candles);
-      const relativeStrength = change - niftyChange;
-      const score = scoreRow(m, change, relativeStrength);
+  // Keep concurrency bounded so a Vercel request does not hammer the Upstox API.
+  const queue = [...candidates];
+  const workers = Array.from({ length: 6 }, async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      if (!item) return;
+      const { instrument, change } = item;
+      try {
+        const key = encodeURIComponent(instrument.instrument_key);
+        const data = await fetchJson(`${API}/v3/historical-candle/intraday/${key}/minutes/5`, token);
+        const candles = (data.data?.candles ?? []) as Candle[];
+        if (candles.length < 5) {
+          tooFewCandles++;
+          continue;
+        }
 
-      // Quality gate: the main table should contain potential winners, not every mover.
-      const qualifies =
-        change >= 0.30 &&
-        m.price >= m.ema20 * 0.995 &&
-        m.vwapGap >= -0.20 &&
-        (m.rvol >= 1.35 || m.volumeAcceleration >= 1.50 || m.breakout) &&
-        relativeStrength >= -0.15 &&
-        score >= 55;
-      if (!qualifies) return;
+        candleSuccess++;
+        const m = metrics(candles);
+        const relativeStrength = change - niftyChange;
+        const score = scoreRow(m, change, relativeStrength);
 
-      rows.push({
-        symbol: instrument.trading_symbol,
-        score,
-        rvol: Number(m.rvol.toFixed(2)),
-        volumeAcceleration: Number(m.volumeAcceleration.toFixed(2)),
-        change: Number(change.toFixed(2)),
-        vwapGap: Number(m.vwapGap.toFixed(2)),
-        relativeStrength: Number(relativeStrength.toFixed(2)),
-        breakout: m.breakout,
-        ema9: Number(m.ema9.toFixed(2)),
-        ema20: Number(m.ema20.toFixed(2)),
-        rsi: Number(m.rsi.toFixed(1)),
-        price: Number(m.price.toFixed(2)),
-      });
-    } catch {
-      // One unavailable candle series must not take down the entire scanner.
+        // Main gate is deliberately early enough to catch a move while it is forming.
+        // It still requires unusual volume OR acceleration OR a fresh breakout.
+        const qualifies =
+          change >= 0.10 &&
+          m.price >= m.ema20 * 0.99 &&
+          m.vwapGap >= -0.40 &&
+          (m.rvol >= 1.15 || m.volumeAcceleration >= 1.25 || m.breakout) &&
+          relativeStrength >= -0.30 &&
+          score >= 45;
+        if (!qualifies) continue;
+
+        rows.push({
+          symbol: instrument.trading_symbol,
+          score,
+          rvol: Number(m.rvol.toFixed(2)),
+          volumeAcceleration: Number(m.volumeAcceleration.toFixed(2)),
+          change: Number(change.toFixed(2)),
+          vwapGap: Number(m.vwapGap.toFixed(2)),
+          relativeStrength: Number(relativeStrength.toFixed(2)),
+          breakout: m.breakout,
+          ema9: Number(m.ema9.toFixed(2)),
+          ema20: Number(m.ema20.toFixed(2)),
+          rsi: Number(m.rsi.toFixed(1)),
+          price: Number(m.price.toFixed(2)),
+        });
+      } catch (error) {
+        candleFailures++;
+        if (!lastFailure) lastFailure = error instanceof Error ? error.message : "Unknown candle error";
+      }
     }
-  }));
+  });
 
-  rows.sort((a, b) => b.score - a.score || b.change - a.change || b.rvol - a.rvol);
+  await Promise.all(workers);
+  rows.sort((a, b) => b.score - a.score || b.rvol - a.rvol || b.change - a.change);
 
   return {
     status: "live",
@@ -244,5 +264,11 @@ export async function runScan(token: string) {
     niftyChange: Number(niftyChange.toFixed(2)),
     generatedAt: new Date().toISOString(),
     rows: rows.slice(0, 15),
+    diagnostics: {
+      candleSuccess,
+      candleFailures,
+      tooFewCandles,
+      lastFailure: lastFailure || undefined,
+    },
   };
 }
