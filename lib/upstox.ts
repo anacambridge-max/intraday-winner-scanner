@@ -59,8 +59,6 @@ async function getFnoUniverse(): Promise<Instrument[]> {
   const compressed = Buffer.from(await response.arrayBuffer());
   const all = JSON.parse(gunzipSync(compressed).toString("utf8")) as Instrument[];
 
-  // Upstox's current BOD JSON identifies stock futures with NSE_FO + FUT and
-  // underlying_type=EQUITY. We map the nearest non-expired future to its NSE_EQ key.
   const futures = all
     .filter(
       (x) =>
@@ -145,8 +143,6 @@ function metrics(candles: Candle[]) {
 
   const priorVolumes = previous.slice(-20).map((c) => Number(c[5])).filter((v) => v > 0);
   const avg20Volume = priorVolumes.length ? priorVolumes.reduce((a, b) => a + b, 0) / priorVolumes.length : 0;
-  // Normalize the live, partially formed 5-min candle by elapsed time. This prevents
-  // a 1-minute-old candle from looking artificially weak versus completed candles.
   const expectedPartial20 = avg20Volume * elapsedFraction;
   const rvol = expectedPartial20 > 0 ? latestVolume / expectedPartial20 : 0;
 
@@ -200,8 +196,6 @@ export async function runScan(token: string) {
   const instrumentKeys = symbols.map((x) => x.instrument_key);
   const encoded = encodeURIComponent([...instrumentKeys, NIFTY_KEY].join(","));
 
-  // Full Market Quotes supports up to 500 instrument keys in one request, so the
-  // complete 214-stock F&O universe can be ranked before requesting candles. citeturn0search0
   const quotes = await fetchJson(`${API}/v2/market-quote/quotes?instrument_key=${encoded}`, token);
   const quoteMap = new Map<string, any>();
   for (const [key, value] of Object.entries(quotes.data ?? {}) as [string, any][]) {
@@ -214,8 +208,6 @@ export async function runScan(token: string) {
   const niftyClose = Number(nifty?.ohlc?.close ?? 0);
   const niftyChange = nifty?.last_price && niftyClose > 0 ? (Number(nifty.last_price) / niftyClose - 1) * 100 : 0;
 
-  // Never choose stocks because they are already the top gainers. Use a broad,
-  // liquid candidate pool and let 5-min volume/price action determine the rank.
   const candidates = symbols
     .map((instrument) => {
       const q = quoteMap.get(instrument.instrument_key);
@@ -244,7 +236,6 @@ export async function runScan(token: string) {
       const { instrument, change } = item;
       try {
         const key = encodeURIComponent(instrument.instrument_key);
-        // Upstox V3 explicitly supports 5-minute intraday candles with OHLC + volume. citeturn0search2turn0search3
         const data = await fetchJson(`${API}/v3/historical-candle/intraday/${key}/minutes/5`, token);
         const candles = (data.data?.candles ?? []) as Candle[];
         if (candles.length < 5) {
@@ -257,8 +248,6 @@ export async function runScan(token: string) {
         const relativeStrength = change - niftyChange;
         const score = scoreRow(m, change, relativeStrength);
 
-        // Early-quality gate: it can catch a developing move, but it must have
-        // unusual volume/acceleration or a fresh breakout plus price structure.
         const qualifies =
           change >= 0.05 &&
           m.price >= m.ema20 * 0.985 &&
