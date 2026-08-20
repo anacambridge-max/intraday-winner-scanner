@@ -26,6 +26,12 @@ type ScanResponse = {
   generatedAt?: string;
   rows?: Row[];
   message?: string;
+  diagnostics?: {
+    candleSuccess?: number;
+    candleFailures?: number;
+    tooFewCandles?: number;
+    lastFailure?: string;
+  };
 };
 
 function fmt(value: number, digits = 2) {
@@ -56,6 +62,8 @@ export default function Home() {
 
   const live = data.status === "live";
   const rows = data.rows ?? [];
+  const success = data.diagnostics?.candleSuccess ?? 0;
+  const failures = data.diagnostics?.candleFailures ?? 0;
 
   return (
     <main className="shell">
@@ -73,7 +81,7 @@ export default function Home() {
       <section className="stats">
         <div className="card"><div className="label">Market</div><div className="value">NSE</div></div>
         <div className="card"><div className="label">F&amp;O Universe</div><div className="value">{data.universe ?? "--"}</div></div>
-        <div className="card"><div className="label">5-min Candidates</div><div className="value">{data.analyzed ?? "--"}</div></div>
+        <div className="card"><div className="label">5-min Analyzed</div><div className="value">{data.analyzed ?? "--"}</div></div>
         <div className="card"><div className="label">NIFTY</div><div className="value">{data.niftyChange != null ? `${data.niftyChange >= 0 ? "+" : ""}${fmt(data.niftyChange)}%` : "--"}</div></div>
       </section>
 
@@ -98,7 +106,7 @@ export default function Home() {
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={12} className="empty">{live ? "No stock currently passes the quality gate. This is intentional — the scanner filters for potential winners rather than filling the table." : "Waiting for Upstox market data…"}</td></tr>
+                <tr><td colSpan={12} className="empty">{live ? "No qualified candidate in this refresh." : "Waiting for Upstox market data…"}</td></tr>
               ) : rows.map((row, index) => (
                 <tr key={row.symbol}>
                   <td className="rank">{index + 1}</td>
@@ -121,8 +129,11 @@ export default function Home() {
       </section>
 
       <div className="footerLine">
-        Last update: {data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString("en-IN") : "—"} · Scanner is a research tool, not an execution signal.
+        Candle health: {success}/{data.analyzed ?? 0} successful{failures ? ` • ${failures} failed` : ""} · Last update: {data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString("en-IN") : "—"} · Scanner is a research tool, not an execution signal.
       </div>
+      {data.diagnostics?.lastFailure && (
+        <div className="footerLine">Last candle API issue: {data.diagnostics.lastFailure}</div>
+      )}
     </main>
   );
 }
