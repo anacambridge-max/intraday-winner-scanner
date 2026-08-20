@@ -2,6 +2,9 @@ import { gunzipSync } from "zlib";
 
 const INSTRUMENT_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz";
 const API = "https://api.upstox.com";
+const NIFTY_KEY = "NSE_INDEX|Nifty 50";
+const MAX_UNIVERSE = 214;
+const MAX_CANDIDATES = 30;
 
 export type Instrument = {
   segment: string;
@@ -10,7 +13,8 @@ export type Instrument = {
   trading_symbol: string;
   underlying_key?: string;
   underlying_symbol?: string;
-  expiry?: number;
+  underlying_type?: string;
+  expiry?: number | string;
 };
 
 type Candle = [string, number, number, number, number, number, number];
@@ -40,6 +44,13 @@ function authHeaders(token: string) {
   };
 }
 
+function expiryMs(value: number | string | undefined) {
+  if (value == null) return 0;
+  if (typeof value === "number") return value < 10_000_000_000 ? value * 1000 : value;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 async function getFnoUniverse(): Promise<Instrument[]> {
   if (cachedUniverse && cachedUniverse.expires > Date.now()) return cachedUniverse.instruments;
 
@@ -48,10 +59,18 @@ async function getFnoUniverse(): Promise<Instrument[]> {
   const compressed = Buffer.from(await response.arrayBuffer());
   const all = JSON.parse(gunzipSync(compressed).toString("utf8")) as Instrument[];
 
+  // Upstox's current BOD JSON identifies stock futures with NSE_FO + FUT and
+  // underlying_type=EQUITY. We map the nearest non-expired future to its NSE_EQ key.
   const futures = all
-    .filter((x) => x.segment === "NSE_FO" && x.instrument_type === "FUT" && x.underlying_key)
-    .filter((x) => !x.expiry || x.expiry >= Date.now())
-    .sort((a, b) => (a.expiry ?? 0) - (b.expiry ?? 0));
+    .filter(
+      (x) =>
+        x.segment === "NSE_FO" &&
+        x.instrument_type === "FUT" &&
+        x.underlying_type === "EQUITY" &&
+        Boolean(x.underlying_key),
+    )
+    .filter((x) => expiryMs(x.expiry) === 0 || expiryMs(x.expiry) >= Date.now())
+    .sort((a, b) => expiryMs(a.expiry) - expiryMs(b.expiry));
 
   const seen = new Set<string>();
   const universe: Instrument[] = [];
@@ -64,6 +83,10 @@ async function getFnoUniverse(): Promise<Instrument[]> {
       instrument_key: future.underlying_key,
       trading_symbol: future.underlying_symbol ?? future.trading_symbol.split(" ")[0],
     });
+  }
+
+  if (universe.length < 150) {
+    throw new Error(`F&O universe unexpectedly small: ${universe.length}`);
   }
 
   cachedUniverse = { expires: Date.now() + 6 * 60 * 60 * 1000, instruments: universe };
@@ -107,18 +130,30 @@ function rsi(values: number[], period = 14) {
 }
 
 function metrics(candles: Candle[]) {
-  // Upstox returns newest first, so normalize to oldest -> newest.
   const ordered = [...candles].sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]));
   const closes = ordered.map((c) => Number(c[4]));
   const latest = ordered[ordered.length - 1];
   const previous = ordered.slice(0, -1);
   const price = Number(latest[4]);
+
+  const latestStart = Date.parse(latest[0]);
+  const now = Date.now();
+  const elapsedFraction = Number.isFinite(latestStart)
+    ? clamp((now - latestStart) / 300_000, 0.20, 1)
+    : 1;
+  const latestVolume = Number(latest[5]);
+
   const priorVolumes = previous.slice(-20).map((c) => Number(c[5])).filter((v) => v > 0);
   const avg20Volume = priorVolumes.length ? priorVolumes.reduce((a, b) => a + b, 0) / priorVolumes.length : 0;
-  const rvol = avg20Volume > 0 ? Number(latest[5]) / avg20Volume : 0;
+  // Normalize the live, partially formed 5-min candle by elapsed time. This prevents
+  // a 1-minute-old candle from looking artificially weak versus completed candles.
+  const expectedPartial20 = avg20Volume * elapsedFraction;
+  const rvol = expectedPartial20 > 0 ? latestVolume / expectedPartial20 : 0;
+
   const prior5 = previous.slice(-5).map((c) => Number(c[5])).filter((v) => v > 0);
   const avg5Volume = prior5.length ? prior5.reduce((a, b) => a + b, 0) / prior5.length : 0;
-  const volumeAcceleration = avg5Volume > 0 ? Number(latest[5]) / avg5Volume : 0;
+  const expectedPartial5 = avg5Volume * elapsedFraction;
+  const volumeAcceleration = expectedPartial5 > 0 ? latestVolume / expectedPartial5 : 0;
 
   let pv = 0;
   let vol = 0;
@@ -129,8 +164,10 @@ function metrics(candles: Candle[]) {
     vol += v;
   }
   const vwap = vol > 0 ? pv / vol : price;
-  const recentBreakoutHigh = Math.max(...previous.slice(-6).map((c) => Number(c[2])), -Infinity);
-  const breakout = previous.length >= 3 && price > recentBreakoutHigh;
+
+  const completed = previous.slice(-6);
+  const recentBreakoutHigh = completed.length ? Math.max(...completed.map((c) => Number(c[2]))) : -Infinity;
+  const breakout = completed.length >= 3 && price > recentBreakoutHigh;
 
   return {
     price,
@@ -146,7 +183,7 @@ function metrics(candles: Candle[]) {
 }
 
 function scoreRow(m: ReturnType<typeof metrics>, change: number, relativeStrength: number) {
-  const volumeScore = clamp((m.rvol - 1) / 4.5 * 25);
+  const volumeScore = clamp((m.rvol - 1) / 5.5 * 25);
   const accelerationScore = clamp((m.volumeAcceleration - 1) / 3 * 10);
   const momentumScore = clamp((change + 0.10) / 2.90 * 20);
   const vwapScore = clamp((m.vwapGap + 0.40) / 1.60 * 15);
@@ -159,27 +196,26 @@ function scoreRow(m: ReturnType<typeof metrics>, change: number, relativeStrengt
 
 export async function runScan(token: string) {
   const universe = await getFnoUniverse();
-  const symbols = universe.slice(0, 214);
+  const symbols = universe.slice(0, MAX_UNIVERSE);
   const instrumentKeys = symbols.map((x) => x.instrument_key);
-  const niftyKey = "NSE_INDEX|Nifty 50";
-  const encoded = encodeURIComponent([...instrumentKeys, niftyKey].join(","));
+  const encoded = encodeURIComponent([...instrumentKeys, NIFTY_KEY].join(","));
 
+  // Full Market Quotes supports up to 500 instrument keys in one request, so the
+  // complete 214-stock F&O universe can be ranked before requesting candles. citeturn0search0
   const quotes = await fetchJson(`${API}/v2/market-quote/quotes?instrument_key=${encoded}`, token);
   const quoteMap = new Map<string, any>();
   for (const [key, value] of Object.entries(quotes.data ?? {}) as [string, any][]) {
     if (!value) continue;
-    // Upstox may expose the instrument key as either the map key or instrument_token.
     if (value.instrument_token) quoteMap.set(value.instrument_token, value);
     quoteMap.set(key.replace(":", "|"), value);
   }
 
-  const nifty = quoteMap.get(niftyKey);
+  const nifty = quoteMap.get(NIFTY_KEY);
   const niftyClose = Number(nifty?.ohlc?.close ?? 0);
   const niftyChange = nifty?.last_price && niftyClose > 0 ? (Number(nifty.last_price) / niftyClose - 1) * 100 : 0;
 
-  // Do not start with "top gainers" only. That would make the scanner lagging by design.
-  // Use price strength + traded value to select a manageable live candidate set, then
-  // let the 5-minute engine decide whether the move is backed by unusual volume.
+  // Never choose stocks because they are already the top gainers. Use a broad,
+  // liquid candidate pool and let 5-min volume/price action determine the rank.
   const candidates = symbols
     .map((instrument) => {
       const q = quoteMap.get(instrument.instrument_key);
@@ -190,9 +226,9 @@ export async function runScan(token: string) {
       return { instrument, change, tradedValue };
     })
     .filter((x): x is { instrument: Instrument; change: number; tradedValue: number } => Boolean(x))
-    .filter((x) => x.change > -2.0)
+    .filter((x) => x.change >= -1.0)
     .sort((a, b) => b.tradedValue - a.tradedValue || b.change - a.change)
-    .slice(0, 24);
+    .slice(0, MAX_CANDIDATES);
 
   const rows: ScanRow[] = [];
   let candleSuccess = 0;
@@ -200,7 +236,6 @@ export async function runScan(token: string) {
   let tooFewCandles = 0;
   let lastFailure = "";
 
-  // Keep concurrency bounded so a Vercel request does not hammer the Upstox API.
   const queue = [...candidates];
   const workers = Array.from({ length: 6 }, async () => {
     while (queue.length) {
@@ -209,6 +244,7 @@ export async function runScan(token: string) {
       const { instrument, change } = item;
       try {
         const key = encodeURIComponent(instrument.instrument_key);
+        // Upstox V3 explicitly supports 5-minute intraday candles with OHLC + volume. citeturn0search2turn0search3
         const data = await fetchJson(`${API}/v3/historical-candle/intraday/${key}/minutes/5`, token);
         const candles = (data.data?.candles ?? []) as Candle[];
         if (candles.length < 5) {
@@ -221,15 +257,18 @@ export async function runScan(token: string) {
         const relativeStrength = change - niftyChange;
         const score = scoreRow(m, change, relativeStrength);
 
-        // Main gate is deliberately early enough to catch a move while it is forming.
-        // It still requires unusual volume OR acceleration OR a fresh breakout.
+        // Early-quality gate: it can catch a developing move, but it must have
+        // unusual volume/acceleration or a fresh breakout plus price structure.
         const qualifies =
-          change >= 0.10 &&
-          m.price >= m.ema20 * 0.99 &&
-          m.vwapGap >= -0.40 &&
-          (m.rvol >= 1.15 || m.volumeAcceleration >= 1.25 || m.breakout) &&
-          relativeStrength >= -0.30 &&
-          score >= 45;
+          change >= 0.05 &&
+          m.price >= m.ema20 * 0.985 &&
+          m.vwapGap >= -0.55 &&
+          (m.rvol >= 1.10 || m.volumeAcceleration >= 1.20 || m.breakout) &&
+          relativeStrength >= -0.35 &&
+          m.rsi >= 48 &&
+          m.rsi <= 82 &&
+          score >= 40;
+
         if (!qualifies) continue;
 
         rows.push({
