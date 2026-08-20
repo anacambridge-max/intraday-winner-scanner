@@ -84,7 +84,6 @@ async function getFnoUniverse(): Promise<Instrument[]> {
   }
 
   if (universe.length < 150) throw new Error(`F&O universe unexpectedly small: ${universe.length}`);
-
   cachedUniverse = { expires: Date.now() + 6 * 60 * 60 * 1000, instruments: universe };
   return universe;
 }
@@ -132,10 +131,9 @@ function metrics(candles: Candle[]) {
   const previous = ordered.slice(0, -1);
   const price = Number(latest[4]);
 
-  // Normalize the live, still-forming 5-minute candle against elapsed time.
   const latestStart = Date.parse(latest[0]);
   const elapsedFraction = Number.isFinite(latestStart)
-    ? clamp((Date.now() - latestStart) / 300_000, 0.20, 1)
+    ? Math.max(0.20, Math.min(1, (Date.now() - latestStart) / 300_000))
     : 1;
   const latestVolume = Number(latest[5]);
 
@@ -175,22 +173,21 @@ function metrics(candles: Candle[]) {
 }
 
 function scoreRow(m: ReturnType<typeof metrics>, change: number, relativeStrength: number) {
-  const volumeScore = clamp((m.rvol - 1) / 5.5 * 25);
-  const accelerationScore = clamp((m.volumeAcceleration - 1) / 3 * 10);
-  const momentumScore = clamp((change + 0.10) / 2.90 * 20);
-  const vwapScore = clamp((m.vwapGap + 0.40) / 1.60 * 15);
+  const volumeScore = clamp((m.rvol - 0.85) / 4.5 * 25);
+  const accelerationScore = clamp((m.volumeAcceleration - 0.90) / 3 * 10);
+  const momentumScore = clamp((change + 0.25) / 3.25 * 20);
+  const vwapScore = clamp((m.vwapGap + 0.75) / 2.00 * 15);
   const trendScore = m.ema9 >= m.ema20 ? 10 : 0;
   const breakoutScore = m.breakout ? 10 : 0;
-  const rsScore = clamp((relativeStrength + 0.25) / 2.25 * 10);
-  const rsiBonus = m.rsi >= 55 && m.rsi <= 78 ? 5 : 0;
+  const rsScore = clamp((relativeStrength + 0.50) / 2.50 * 10);
+  const rsiBonus = m.rsi >= 52 && m.rsi <= 82 ? 5 : 0;
   return Math.round(clamp(volumeScore + accelerationScore + momentumScore + vwapScore + trendScore + breakoutScore + rsScore + rsiBonus));
 }
 
 export async function runScan(token: string) {
   const universe = await getFnoUniverse();
   const symbols = universe.slice(0, MAX_UNIVERSE);
-  const instrumentKeys = symbols.map((x) => x.instrument_key);
-  const encoded = encodeURIComponent([...instrumentKeys, NIFTY_KEY].join(","));
+  const encoded = encodeURIComponent([...symbols.map((x) => x.instrument_key), NIFTY_KEY].join(","));
 
   const quotes = await fetchJson(`${API}/v2/market-quote/quotes?instrument_key=${encoded}`, token);
   const quoteMap = new Map<string, any>();
@@ -202,20 +199,19 @@ export async function runScan(token: string) {
 
   const nifty = quoteMap.get(NIFTY_KEY);
   const niftyClose = Number(nifty?.ohlc?.close ?? 0);
-  const niftyChange = nifty?.last_price && niftyClose > 0 ? (Number(nifty.last_price) / niftyClose - 1) * 100 : 0;
+  const niftyChange = Number(nifty?.net_change ?? 0) || (nifty?.last_price && niftyClose > 0 ? (Number(nifty.last_price) / niftyClose - 1) * 100 : 0);
 
-  // Use liquidity to make the candle analysis manageable, but do not select by gainers only.
   const candidates = symbols
     .map((instrument) => {
       const q = quoteMap.get(instrument.instrument_key);
       if (!q?.last_price) return null;
       const close = Number(q.ohlc?.close ?? 0);
-      const change = close > 0 ? (Number(q.last_price) / close - 1) * 100 : 0;
+      const change = Number(q.net_change ?? 0) || (close > 0 ? (Number(q.last_price) / close - 1) * 100 : 0);
       const tradedValue = Number(q.volume ?? 0) * Number(q.last_price ?? 0);
       return { instrument, change, tradedValue };
     })
     .filter((x): x is { instrument: Instrument; change: number; tradedValue: number } => Boolean(x))
-    .filter((x) => x.change >= -1.0)
+    .filter((x) => x.change >= -1.5)
     .sort((a, b) => b.tradedValue - a.tradedValue || b.change - a.change)
     .slice(0, MAX_CANDIDATES);
 
@@ -230,48 +226,39 @@ export async function runScan(token: string) {
     while (queue.length) {
       const item = queue.shift();
       if (!item) return;
-      const { instrument, change } = item;
       try {
-        const key = encodeURIComponent(instrument.instrument_key);
+        const key = encodeURIComponent(item.instrument.instrument_key);
         const data = await fetchJson(`${API}/v3/historical-candle/intraday/${key}/minutes/5`, token);
         const candles = (data.data?.candles ?? []) as Candle[];
         if (candles.length < 5) {
           tooFewCandles++;
           continue;
         }
-
         candleSuccess++;
-        const m = metrics(candles);
-        const relativeStrength = change - niftyChange;
-        const score = scoreRow(m, change, relativeStrength);
 
-        // Early-winner gate: do not require every confirmation at once.
-        // A genuine move can appear before EMA/RSI/breakout all align.
-        const volumeTrigger = m.rvol >= 1.10 || m.volumeAcceleration >= 1.20 || m.breakout;
+        const m = metrics(candles);
+        const relativeStrength = item.change - niftyChange;
+        const score = scoreRow(m, item.change, relativeStrength);
+        const volumeTrigger = m.rvol >= 0.95 || m.volumeAcceleration >= 1.0 || m.breakout;
         const structureScore = [
-          m.price >= m.ema20 * 0.985,
-          m.vwapGap >= -0.65,
+          m.price >= m.ema20 * 0.98,
+          m.vwapGap >= -0.80,
           m.ema9 >= m.ema20,
-          m.rsi >= 50,
-          relativeStrength >= -0.40,
+          m.rsi >= 48,
+          relativeStrength >= -0.50,
         ].filter(Boolean).length;
 
-        const qualifies =
-          change >= 0.00 &&
-          volumeTrigger &&
-          structureScore >= 2 &&
-          m.rsi >= 45 &&
-          m.rsi <= 85 &&
-          score >= 35;
-
+        // Rank the best live opportunities rather than hiding everything behind an overly strict gate.
+        // A row must still have positive/near-positive momentum plus a volume/structure trigger.
+        const qualifies = item.change >= -0.25 && volumeTrigger && structureScore >= 1 && score >= 25;
         if (!qualifies) continue;
 
         rows.push({
-          symbol: instrument.trading_symbol,
+          symbol: item.instrument.trading_symbol,
           score,
           rvol: Number(m.rvol.toFixed(2)),
           volumeAcceleration: Number(m.volumeAcceleration.toFixed(2)),
-          change: Number(change.toFixed(2)),
+          change: Number(item.change.toFixed(2)),
           vwapGap: Number(m.vwapGap.toFixed(2)),
           relativeStrength: Number(relativeStrength.toFixed(2)),
           breakout: m.breakout,
@@ -302,6 +289,9 @@ export async function runScan(token: string) {
       candleSuccess,
       candleFailures,
       tooFewCandles,
+      qualified: rows.length,
+      bestScore: rows[0]?.score ?? 0,
+      bestSymbol: rows[0]?.symbol ?? "",
       lastFailure: lastFailure || undefined,
     },
   };
